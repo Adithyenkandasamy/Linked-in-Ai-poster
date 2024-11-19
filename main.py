@@ -1,36 +1,26 @@
 import os
-import re
 from PIL import Image
-from linkedin_api import Linkedin  # A hypothetical library for LinkedIn API interaction
+from linkedin_api import Linkedin  # Hypothetical LinkedIn API interaction library
 import openai
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-openai_api_key = os.getenv("github")
+github_key = os.getenv("github_key")
 linkedin_username = os.getenv("linkedin_username")
 linkedin_password = os.getenv("linkedin_password")
-
-# Initialize OpenAI
-openai.api_key = openai_api_key
- Load environment variables
-load_dotenv()
-token = os.getenv("github_key")
-endpoint = "https://models.inference.ai.azure.com"
+openai_endpoint = "https://models.inference.ai.azure.com"
 model_name = "gpt-4o"
 
+# Initialize OpenAI client
 def initialize_openai_client():
-    """Initialize and return OpenAI client"""
-    openai.api_key = token
-    openai.api_base = endpoint
+    """Initialize and return OpenAI client."""
+    openai.api_key = github_key
+    openai.api_base = openai_endpoint
     return openai
 
 # Authenticate LinkedIn API
 linkedin = Linkedin(linkedin_username, linkedin_password)
-
-def initialize_openai_client():
-    """Initialize and return OpenAI client."""
-    return openai
 
 def generate_article_prompt(client, topic, target_audience):
     """Generate a LinkedIn article prompt using OpenAI."""
@@ -42,7 +32,7 @@ def generate_article_prompt(client, topic, target_audience):
         """
         
         response = client.ChatCompletion.create(
-            model="gpt-4",
+            model=model_name,
             messages=[
                 {
                     "role": "system",
@@ -86,7 +76,7 @@ def post_to_linkedin(topic, target_audience, image_path):
         print("Failed to generate article content.")
         return
 
-    print("Article content generated successfully!")
+    print("\nGenerated Article Content:\n")
     print(article_content)
 
     confirm = input("\nDo you want to post this article to LinkedIn? (yes/no): ").strip().lower()
@@ -95,22 +85,13 @@ def post_to_linkedin(topic, target_audience, image_path):
         return
 
     # Validate and prepare image
-    if image_path:
-        validated_image = attach_image(image_path)
-        if not validated_image:
-            print("Skipping image due to validation issues.")
-            validated_image = None
-    else:
-        validated_image = None
+    validated_image = attach_image(image_path) if image_path else None
+    if image_path and not validated_image:
+        print("Skipping image due to validation issues.")
 
     try:
         print("Posting to LinkedIn...")
-        post_content = {
-            "title": topic,
-            "content": article_content,
-        }
-        
-        # Add image if available
+        post_content = {"title": topic, "content": article_content}
         if validated_image:
             post_content["image"] = validated_image
 
@@ -126,10 +107,7 @@ def main():
         target_audience = input("Who is the target audience? (e.g., professionals, developers, marketers): ").strip()
         image_path = input("Enter the full path of the image to include (or press Enter to skip): ").strip()
 
-        if not image_path:
-            image_path = None
-
-        post_to_linkedin(topic, target_audience, image_path)
+        post_to_linkedin(topic, target_audience, image_path if image_path else None)
 
     except KeyboardInterrupt:
         print("\nProcess interrupted by user.")
