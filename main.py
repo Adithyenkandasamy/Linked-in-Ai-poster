@@ -6,31 +6,40 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-github_key = os.getenv("github_key")
-linkedin_username = os.getenv("linkedin_username")
-linkedin_password = os.getenv("linkedin_password")
-openai_endpoint = "https://models.inference.ai.azure.com"
-model_name = "gpt-4o"
+openai_api_key = os.getenv("OPENAI_API_KEY")
+linkedin_username_or_phone = os.getenv("LINKEDIN_USERNAME_OR_PHONE")
+linkedin_password = os.getenv("LINKEDIN_PASSWORD")
+openai_endpoint = os.getenv("OPENAI_ENDPOINT", "https://models.inference.ai.azure.com")
+model_name = os.getenv("OPENAI_MODEL_NAME", "gpt-4o")
 
 # Initialize OpenAI client
 def initialize_openai_client():
     """Initialize and return OpenAI client."""
-    openai.api_key = github_key
+    openai.api_key = openai_api_key
     openai.api_base = openai_endpoint
     return openai
 
 # Authenticate LinkedIn API
-linkedin = Linkedin(linkedin_username, linkedin_password)
+def authenticate_linkedin():
+    """Authenticate and return LinkedIn client."""
+    try:
+        linkedin = Linkedin(linkedin_username_or_phone, linkedin_password)
+        print("LinkedIn login successful.")
+        return linkedin
+    except Exception as e:
+        print(f"Error logging into LinkedIn: {e}")
+        exit()
 
-def generate_article_prompt(client, topic, target_audience):
-    """Generate a LinkedIn article prompt using OpenAI."""
+def generate_article(client, topic, target_audience):
+    """Generate a LinkedIn article using OpenAI."""
     try:
         prompt = f"""
         Write a professional and engaging LinkedIn article about {topic} aimed at {target_audience}.
         Structure the content with a captivating introduction, informative body, and a clear conclusion.
-        Keep the tone professional yet approachable. Provide value to readers in the field. Format the output with clear section headings and bullet points where necessary.
+        Keep the tone professional yet approachable. Provide value to readers in the field.
+        Format the output with clear section headings and bullet points where necessary.
         """
-        
+
         response = client.ChatCompletion.create(
             model=model_name,
             messages=[
@@ -41,22 +50,22 @@ def generate_article_prompt(client, topic, target_audience):
                 {
                     "role": "user",
                     "content": prompt,
-                }
+                },
             ]
         )
 
         article = response.choices[0].message.content.strip()
         return article
     except Exception as e:
-        print(f"Error generating article prompt: {e}")
+        print(f"Error generating article: {e}")
         return None
 
-def attach_image(image_path):
-    """Validate and prepare an image for LinkedIn post."""
+def validate_image(image_path):
+    """Validate the provided image file."""
     if not os.path.exists(image_path):
         print(f"Image file not found: {image_path}")
         return None
-    
+
     try:
         with Image.open(image_path) as img:
             img.verify()  # Check if the file is a valid image
@@ -65,12 +74,12 @@ def attach_image(image_path):
         print(f"Error validating image: {e}")
         return None
 
-def post_to_linkedin(topic, target_audience, image_path):
-    """Create and post an article on LinkedIn."""
+def post_to_linkedin(linkedin, topic, target_audience, image_path):
+    """Generate and post an article to LinkedIn."""
     client = initialize_openai_client()
 
     print("Generating LinkedIn article...")
-    article_content = generate_article_prompt(client, topic, target_audience)
+    article_content = generate_article(client, topic, target_audience)
 
     if not article_content:
         print("Failed to generate article content.")
@@ -84,8 +93,8 @@ def post_to_linkedin(topic, target_audience, image_path):
         print("Post cancelled.")
         return
 
-    # Validate and prepare image
-    validated_image = attach_image(image_path) if image_path else None
+    # Validate image
+    validated_image = validate_image(image_path) if image_path else None
     if image_path and not validated_image:
         print("Skipping image due to validation issues.")
 
@@ -102,12 +111,15 @@ def post_to_linkedin(topic, target_audience, image_path):
 
 def main():
     try:
+        # Authenticate LinkedIn
+        linkedin = authenticate_linkedin()
+
         # Get article details from user
         topic = input("Enter the topic for your LinkedIn article: ").strip()
         target_audience = input("Who is the target audience? (e.g., professionals, developers, marketers): ").strip()
         image_path = input("Enter the full path of the image to include (or press Enter to skip): ").strip()
 
-        post_to_linkedin(topic, target_audience, image_path if image_path else None)
+        post_to_linkedin(linkedin, topic, target_audience, image_path if image_path else None)
 
     except KeyboardInterrupt:
         print("\nProcess interrupted by user.")
