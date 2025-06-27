@@ -1,39 +1,27 @@
-from flask import Flask, render_template, request, redirect, url_for, session
-from linkedin_helper import LinkedInHelper
-import os
-from dotenv import load_dotenv
+from flask import Flask, request, render_template_string
+from playwright.sync_api import sync_playwright
+import threading
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
-load_dotenv()
+user_sessions = {}
 
-LINKEDIN_CLIENT_ID = os.getenv('LINKEDIN_CLIENT_ID')
-LINKEDIN_CLIENT_SECRET = os.getenv('LINKEDIN_CLIENT_SECRET')
-REDIRECT_URI = 'http://localhost:5000/callback'
-
-linkedin_helper = LinkedInHelper(LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, REDIRECT_URI)
-
-@app.route('/')
+@app.route('/login')
 def login():
-    return render_template('login.html')
+    user_id = request.args.get("user")
+    if not user_id:
+        return "Missing user ID", 400
+    threading.Thread(target=launch_browser_login, args=(user_id,), daemon=True).start()
+    return render_template_string("<h3>Login opening in browser...</h3>")
 
-@app.route('/auth/linkedin')
-def linkedin_auth():
-    auth_url = linkedin_helper.get_auth_url()
-    return redirect(auth_url)
-
-@app.route('/callback')
-def callback():
-    code = request.args.get('code')
-    if not code:
-        return "Error: No authorization code provided", 400
-    
-    try:
-        access_token = linkedin_helper.get_access_token(code)
-        session['access_token'] = access_token
-        return "Successfully authenticated with LinkedIn! You can now close this window and return to the bot."
-    except Exception as e:
-        return f"Authentication failed: {str(e)}", 400
-
-if __name__ == '__main__':
-    app.run(debug=True)
+def launch_browser_login(user_id):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto("https://www.linkedin.com/login")
+        try:
+            page.wait_for_selector("div.feed-identity-module", timeout=120000)
+            user_sessions[user_id] = context
+            print(f"[{user_id}] ✅ Logged in.")
+        except Exception as e:
+            print(f"[{user_id}] ❌ Login failed: {e}")
