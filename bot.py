@@ -89,16 +89,25 @@ async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_preview(update_or_query, context):
     user_id = update_or_query.effective_user.id
     text = user_data[user_id]["text"]
+    image = user_data[user_id].get("image")
 
     keyboard = [
         [InlineKeyboardButton("✏️ Edit", callback_data="edit_post"),
          InlineKeyboardButton("✅ Approve & Post", callback_data="approve_post")]
     ]
-
-    if hasattr(update_or_query, "message"):
-        await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Handle both CallbackQuery and Message objects
+    if hasattr(update_or_query, 'callback_query'):
+        # It's a CallbackQuery
+        message = update_or_query.callback_query.message
+        await message.reply_text(text, reply_markup=reply_markup)
+    elif hasattr(update_or_query, 'message'):
+        # It's a Message
+        await update_or_query.message.reply_text(text, reply_markup=reply_markup)
     else:
-        await update_or_query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        # Fallback
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
 
     return WAIT_EDIT_DECISION
 
