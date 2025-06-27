@@ -1,2 +1,5 @@
 env
 .env
+utils/__pycache__/logger.cpython-312.pyc
+__pycache__/linkedin_api.cpython-312.pyc
+__pycache__/gemini_ai.cpython-312.pyc
