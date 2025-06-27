@@ -1,9 +1,14 @@
 import os
 import logging
+import tempfile
+from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes
 from telegram.ext import filters
+from ai_content import generate_linkedin_post
+from web_login import user_sessions
+import asyncio
 
 # Set up logging
 logging.basicConfig(
@@ -14,8 +19,12 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Temporary user state (no DB)
+# User state management
 user_states = {}
+
+# Store temporary files
+temp_dir = Path(tempfile.gettempdir()) / "linkedin_bot"
+temp_dir.mkdir(exist_ok=True)
 
 # Start menu
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,71 +92,124 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not update.message or not update.message.from_user:
-            logger.error("No message or from_user in update")
             return
             
         user_id = update.message.from_user.id
-        logger.info(f"Message received from user {user_id}")
-        state = user_states.get(user_id)
-
-        if not state:
+        state = user_states.get(user_id, {})
+        
+        if 'step' not in state:
             await update.message.reply_text("❗ Please start with /start")
             return
-
+            
         step = state.get("step")
-
+        
         if step == "waiting_topic":
             try:
-                user_states[user_id]['topic'] = update.message.text
+                topic = update.message.text
+                if not topic or len(topic) < 5:
+                    await update.message.reply_text("❌ Please provide a valid topic (at least 5 characters).")
+                    return
+                    
+                user_states[user_id]['topic'] = topic
                 user_states[user_id]['step'] = 'waiting_image'
-                await update.message.reply_text("🖼️ Send an image (optional), or type 'skip'.")
+                await update.message.reply_text("🖼️ Send an image (optional), or type 'skip' to continue without an image.")
             except Exception as e:
                 logger.error(f"Error in waiting_topic handler: {e}")
                 await update.message.reply_text("❌ Failed to process your topic. Please try again.")
-
+                
         elif step == "waiting_image":
             try:
                 if update.message.text and update.message.text.lower() == 'skip':
                     user_states[user_id]['image'] = None
-                    user_states[user_id]['step'] = 'generating'
-                    await update.message.reply_text("🧠 Generating content using AI...")
-                    # placeholder for AI and posting step
+                    await generate_and_post(update, user_id)
                 elif update.message.photo:
-                    user_states[user_id]['image'] = update.message.photo[-1].file_id
-                    user_states[user_id]['step'] = 'generating'
-                    await update.message.reply_text("🧠 Got image. Generating content using AI...")
-                    # placeholder for AI and posting step
+                    # Get the highest quality photo
+                    photo = update.message.photo[-1]
+                    file = await context.bot.get_file(photo.file_id)
+                    
+                    # Save the image temporarily
+                    image_path = temp_dir / f"{user_id}_post_image.jpg"
+                    await file.download_to_drive(image_path)
+                    user_states[user_id]['image_path'] = str(image_path)
+                    await generate_and_post(update, user_id)
+                else:
+                    await update.message.reply_text("❌ Please send an image or type 'skip' to continue without one.")
             except Exception as e:
                 logger.error(f"Error in waiting_image handler: {e}")
                 await update.message.reply_text("❌ Failed to process your image. Please try again.")
+                
     except Exception as e:
         logger.error(f"Unexpected error in handle_message: {e}")
         if 'update' in locals() and update.message:
             await update.message.reply_text("❌ An unexpected error occurred. Please try again.")
 
-async def main():
+async def generate_and_post(update: Update, user_id: int):
+    try:
+        state = user_states.get(user_id, {})
+        topic = state.get('topic')
+        
+        # Generate content using AI
+        await update.message.reply_text("🧠 Generating content using AI...")
+        post_content = generate_linkedin_post(topic)
+        
+        if not post_content or post_content.startswith("⚠️"):
+            await update.message.reply_text("❌ Failed to generate content. Please try again.")
+            return
+            
+        # Check if user is logged in
+        if user_id not in user_sessions:
+            await update.message.reply_text("🔒 Please log in to LinkedIn first using the 'Login' button.")
+            return
+            
+        # Post to LinkedIn
+        await update.message.reply_text("🚀 Posting to LinkedIn...")
+        linkedin_context = user_sessions[user_id]
+        image_path = state.get('image_path')
+        
+        try:
+            from linkedin_helper import post_to_linkedin
+            post_url = post_to_linkedin(linkedin_context, post_content, image_path)
+            
+            # Clean up
+            if image_path and os.path.exists(image_path):
+                os.remove(image_path)
+                
+            if post_url:
+                await update.message.reply_text(f"✅ Successfully posted to LinkedIn!\n\n{post_url}")
+            else:
+                await update.message.reply_text("✅ Post might have been successful, but couldn't get the post URL.")
+                
+        except Exception as e:
+            logger.error(f"Error posting to LinkedIn: {e}")
+            await update.message.reply_text(f"❌ Failed to post to LinkedIn: {str(e)}")
+            
+        # Reset user state
+        if user_id in user_states:
+            del user_states[user_id]
+            
+    except Exception as e:
+        logger.error(f"Error in generate_and_post: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
+        if user_id in user_states:
+            del user_states[user_id]
+
+def main():
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     if not TOKEN:
         raise ValueError("No TELEGRAM_BOT_TOKEN found in environment variables")
     
-    # Create the Application
+    # Create application
     application = Application.builder().token(TOKEN).build()
-
+    
     # Add handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(handle_buttons))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-
-    # Start the Bot
-    print("Bot is running...")
-    await application.initialize()
-    await application.start()
-    await application.run_polling()
-
-    # This will never be reached but is good practice to have
-    await application.stop()
-    await application.shutdown()
+    
+    logger.info("Bot is running...")
+    return application
 
 if __name__ == '__main__':
     import asyncio
-    asyncio.run(main())
+    application = main()
+    asyncio.run(application.run_polling())
