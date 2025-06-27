@@ -1,8 +1,7 @@
-# bot.py
 import os
 from dotenv import load_dotenv
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -25,7 +24,6 @@ AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID"))
     WAIT_FINAL_APPROVAL,
 ) = range(4)
 
-# temporary in-memory store
 user_data = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,17 +45,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("🧠 What topic should the LinkedIn post be about?")
         return WAIT_TOPIC
 
+    if query.data == "wait_image":
+        await query.message.reply_text("📤 OK, send the image now.")
+        return WAIT_IMAGE
+
     if query.data == "skip_image":
         return await show_preview(update, context)
 
     if query.data == "approve_post":
-        text = user_data[update.effective_user.id]["text"]
-        image = user_data[update.effective_user.id].get("image")
-        status_code, resp = post_to_linkedin(text, image)
-        if status_code == 201:
-            await query.message.reply_text("✅ Post published successfully!")
-        else:
-            await query.message.reply_text(f"❌ Failed to post. Error: {resp}")
+        user_id = update.effective_user.id
+        text = user_data[user_id]["text"]
+        image = user_data[user_id].get("image")
+        
+        try:
+            status_code, resp = post_to_linkedin(text, image)
+            # Consider both 200 (OK) and 202 (Accepted) as success status codes
+            if status_code in (200, 201, 202):
+                await query.message.reply_text("✅ Post submitted successfully! It may take a few moments to appear on LinkedIn.")
+            else:
+                await query.message.reply_text(f"❌ Failed to post. Status: {status_code}, Response: {resp}")
+        except Exception as e:
+            await query.message.reply_text(f"❌ An error occurred while posting: {str(e)}")
+            
+        user_data.pop(user_id, None)
         return ConversationHandler.END
 
     if query.data == "edit_post":
@@ -74,17 +84,23 @@ async def receive_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📎 Upload Image", callback_data="wait_image"),
          InlineKeyboardButton("⏭️ Skip", callback_data="skip_image")]
     ]
-    await update.message.reply_text(
-        "Do you want to add an image?", reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Do you want to add an image?", reply_markup=InlineKeyboardMarkup(keyboard))
     return WAIT_IMAGE
 
 async def receive_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await update.message.effective_attachment.get_file()
-    file_path = f"/tmp/{update.effective_user.id}.jpg"
-    await file.download_to_drive(file_path)
-    user_data[update.effective_user.id]["image"] = file_path
-    return await show_preview(update, context)
+    try:
+        user_id = update.effective_user.id
+        photo = update.message.photo[-1]  # Highest resolution
+        file = await photo.get_file()
+        file_path = f"/tmp/{user_id}.jpg"
+        await file.download_to_drive(file_path)
+        user_data[user_id]["image"] = file_path
+        await update.message.reply_text("🖼️ Image received.")
+        return await show_preview(update, context)
+    except Exception as e:
+        logger.error(f"❌ Error receiving image: {e}")
+        await update.message.reply_text("⚠️ Failed to receive image. Try again.")
+        return WAIT_IMAGE
 
 async def show_preview(update_or_query, context):
     user_id = update_or_query.effective_user.id
@@ -96,18 +112,22 @@ async def show_preview(update_or_query, context):
          InlineKeyboardButton("✅ Approve & Post", callback_data="approve_post")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Handle both CallbackQuery and Message objects
-    if hasattr(update_or_query, 'callback_query'):
-        # It's a CallbackQuery
-        message = update_or_query.callback_query.message
-        await message.reply_text(text, reply_markup=reply_markup)
-    elif hasattr(update_or_query, 'message'):
-        # It's a Message
-        await update_or_query.message.reply_text(text, reply_markup=reply_markup)
-    else:
-        # Fallback
-        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+
+    try:
+        if image and os.path.exists(image):
+            with open(image, "rb") as img:
+                await context.bot.send_photo(chat_id=user_id, photo=img)
+
+        if hasattr(update_or_query, 'callback_query') and update_or_query.callback_query:
+            await update_or_query.callback_query.message.reply_text(text, reply_markup=reply_markup)
+        elif hasattr(update_or_query, 'message') and update_or_query.message:
+            await update_or_query.message.reply_text(text, reply_markup=reply_markup)
+        else:
+            await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+
+    except Exception as e:
+        logger.error(f"⚠️ Error in show_preview: {e}")
+        await context.bot.send_message(chat_id=user_id, text="⚠️ Failed to show preview.")
 
     return WAIT_EDIT_DECISION
 
@@ -128,6 +148,7 @@ def main():
         states={
             WAIT_TOPIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_topic)],
             WAIT_IMAGE: [
+                CallbackQueryHandler(button_handler, pattern="^wait_image$"),
                 CallbackQueryHandler(button_handler, pattern="^skip_image$"),
                 MessageHandler(filters.PHOTO, receive_image)
             ],
